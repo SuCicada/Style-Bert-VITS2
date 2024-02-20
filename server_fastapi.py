@@ -14,7 +14,7 @@ import GPUtil
 import psutil
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, status, APIRouter
+from fastapi import FastAPI, HTTPException, Query, Request, status, APIRouter, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from scipy.io import wavfile
@@ -75,43 +75,43 @@ def add_server_api(app: FastAPI | APIRouter,
     load_models(model_holder)
     print(model_holder.models)
 
-    @app.get("/voice", response_class=AudioResponse)
+    @app.post("/voice", response_class=AudioResponse)
     async def voice(
             request: Request,
-            text: str = Query(..., min_length=1, max_length=limit, description=f"セリフ"),
-            encoding: str = Query(None, description="textをURLデコードする(ex, `utf-8`)"),
-            model_id: int = Query(0, description="モデルID。`GET /models/info`のkeyの値を指定ください"),
-            speaker_name: str = Query(
+            text: str = Body(..., min_length=1, max_length=limit, description=f"セリフ"),
+            encoding: str = Body(None, description="textをURLデコードする(ex, `utf-8`)"),
+            model_id: int = Body(0, description="モデルID。`GET /models/info`のkeyの値を指定ください"),
+            speaker_name: str = Body(
                 None, description="話者名(speaker_idより優先)。esd.listの2列目の文字列を指定"
             ),
-            speaker_id: int = Query(
+            speaker_id: int = Body(
                 0, description="話者ID。model_assets>[model]>config.json内のspk2idを確認"
             ),
-            sdp_ratio: float = Query(
+            sdp_ratio: float = Body(
                 DEFAULT_SDP_RATIO,
                 description="SDP(Stochastic Duration Predictor)/DP混合比。比率が高くなるほどトーンのばらつきが大きくなる",
             ),
-            noise: float = Query(DEFAULT_NOISE, description="サンプルノイズの割合。大きくするほどランダム性が高まる"),
-            noisew: float = Query(
+            noise: float = Body(DEFAULT_NOISE, description="サンプルノイズの割合。大きくするほどランダム性が高まる"),
+            noisew: float = Body(
                 DEFAULT_NOISEW, description="SDPノイズ。大きくするほど発音の間隔にばらつきが出やすくなる"
             ),
-            length: float = Query(
+            length: float = Body(
                 DEFAULT_LENGTH, description="話速。基準は1で大きくするほど音声は長くなり読み上げが遅まる"
             ),
-            language: Languages = Query(ln, description=f"textの言語"),
-            auto_split: bool = Query(DEFAULT_LINE_SPLIT, description="改行で分けて生成"),
-            split_interval: float = Query(
+            language: Languages = Body(ln, description=f"textの言語"),
+            auto_split: bool = Body(DEFAULT_LINE_SPLIT, description="改行で分けて生成"),
+            split_interval: float = Body(
                 DEFAULT_SPLIT_INTERVAL, description="分けた場合に挟む無音の長さ（秒）"
             ),
-            assist_text: Optional[str] = Query(
+            assist_text: Optional[str] = Body(
                 None, description="このテキストの読み上げと似た声音・感情になりやすくなる。ただし抑揚やテンポ等が犠牲になる傾向がある"
             ),
-            assist_text_weight: float = Query(
+            assist_text_weight: float = Body(
                 DEFAULT_ASSIST_TEXT_WEIGHT, description="assist_textの強さ"
             ),
-            style: Optional[Union[int, str]] = Query(DEFAULT_STYLE, description="スタイル"),
-            style_weight: float = Query(DEFAULT_STYLE_WEIGHT, description="スタイルの強さ"),
-            reference_audio_path: Optional[str] = Query(None, description="スタイルを音声ファイルで行う"),
+            style: Optional[Union[int, str]] = Body(DEFAULT_STYLE, description="スタイル"),
+            style_weight: float = Body(DEFAULT_STYLE_WEIGHT, description="スタイルの強さ"),
+            reference_audio_path: Optional[str] = Body(None, description="スタイルを音声ファイルで行う"),
     ):
         """Infer text to speech(テキストから感情付き音声を生成する)"""
         logger.info(
