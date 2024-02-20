@@ -8,7 +8,8 @@ from typing import Optional
 import gradio as gr
 import torch
 import yaml
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
 
 from common.constants import (
     DEFAULT_ASSIST_TEXT_WEIGHT,
@@ -247,7 +248,7 @@ def gr_util(item):
         return (gr.update(visible=False), gr.update(visible=True))
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cpu", action="store_true", help="Use CPU instead of GPU")
     parser.add_argument(
@@ -484,7 +485,24 @@ if __name__ == "__main__":
         server_port=args.port
     )
     router = APIRouter()
+
     add_server_api(router, device)
     api_app.include_router(router, prefix="/extern_api")
+    add_docs_api(api_app)
+
     print("API server started.", local_url)
     app.block_thread()
+
+def add_docs_api(app:FastAPI):
+    temp_api = FastAPI()
+    add_server_api(temp_api)
+    @app.get("/extern_api/openapi.json", include_in_schema=False)
+    async def custom_swagger_ui_html():
+        return temp_api.openapi()
+
+    @app.get("/extern_api/docs", include_in_schema=False)
+    async def custom_swagger_ui_html():
+        return get_swagger_ui_html(openapi_url="/extern_api/openapi.json", title="API documentation")
+
+if __name__ == "__main__":
+    main()
