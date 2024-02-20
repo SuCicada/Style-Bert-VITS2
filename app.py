@@ -482,7 +482,7 @@ def main():
     api_app, local_url, _ = app.launch(
         inbrowser=not args.no_autolaunch, share=args.share, server_name=args.server_name,
         prevent_thread_lock=True,
-        server_port=args.port
+        server_port=args.port,
     )
     router = APIRouter()
 
@@ -497,11 +497,11 @@ def add_docs_api(app:FastAPI):
     temp_api = FastAPI()
     add_server_api(temp_api)
     @app.get("/extern_api/openapi.json", include_in_schema=False)
-    async def custom_swagger_ui_html():
+    async def _():
         return temp_api.openapi()
 
     @app.get("/extern_api/docs", include_in_schema=False)
-    async def custom_swagger_ui_html():
+    async def _():
         return get_swagger_ui_html(openapi_url="/extern_api/openapi.json", title="API documentation")
 
 if __name__ == "__main__":
