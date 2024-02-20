@@ -1,7 +1,9 @@
-from text import chinese, japanese, english, cleaned_text_to_sequence
-
-
-language_module_map = {"ZH": chinese, "JP": japanese, "EN": english}
+try:
+    from text import chinese, japanese, english, cleaned_text_to_sequence
+    language_module_map = {"ZH": chinese, "JP": japanese, "EN": english}
+except Exception:
+    from text import japanese, cleaned_text_to_sequence
+    language_module_map = {"JP": japanese}
 
 
 def clean_text(text, language, use_jp_extra=True):

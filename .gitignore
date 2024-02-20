@@ -32,3 +32,4 @@ safetensors.ipynb
 /inputs
 /.idea
 *.iml
+/model_server

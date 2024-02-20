@@ -8,6 +8,7 @@ from typing import Optional
 import gradio as gr
 import torch
 import yaml
+from fastapi import APIRouter
 
 from common.constants import (
     DEFAULT_ASSIST_TEXT_WEIGHT,
@@ -26,6 +27,7 @@ from common.constants import (
 from common.log import logger
 from common.tts_model import ModelHolder
 from infer import InvalidToneError
+from server_fastapi import add_server_api
 from text.japanese import g2kata_tone, kata_tone2phone_tone, text_normalize
 
 # Get path settings
@@ -38,25 +40,25 @@ languages = [l.value for l in Languages]
 
 
 def tts_fn(
-    model_name,
-    model_path,
-    text,
-    language,
-    reference_audio_path,
-    sdp_ratio,
-    noise_scale,
-    noise_scale_w,
-    length_scale,
-    line_split,
-    split_interval,
-    assist_text,
-    assist_text_weight,
-    use_assist_text,
-    style,
-    style_weight,
-    kata_tone_json_str,
-    use_tone,
-    speaker,
+        model_name,
+        model_path,
+        text,
+        language,
+        reference_audio_path,
+        sdp_ratio,
+        noise_scale,
+        noise_scale_w,
+        length_scale,
+        line_split,
+        split_interval,
+        assist_text,
+        assist_text_weight,
+        use_assist_text,
+        style,
+        style_weight,
+        kata_tone_json_str,
+        use_tone,
+        speaker,
 ):
     model_holder.load_model_gr(model_name, model_path)
 
@@ -257,13 +259,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--server-name",
         type=str,
-        default=None,
+        default="0.0.0.0",
         help="Server name for Gradio app",
     )
     parser.add_argument(
         "--no-autolaunch",
         action="store_true",
-        default=False,
+        default=True,
+        help="Do not launch app automatically",
+    )
+    parser.add_argument(
+        "-p",
+        "--port",
+        type=int,
         help="Do not launch app automatically",
     )
     args = parser.parse_args()
@@ -470,6 +478,13 @@ if __name__ == "__main__":
             outputs=[style, ref_audio_path],
         )
 
-    app.launch(
-        inbrowser=not args.no_autolaunch, share=args.share, server_name=args.server_name
+    api_app, local_url, _ = app.launch(
+        inbrowser=not args.no_autolaunch, share=args.share, server_name=args.server_name,
+        prevent_thread_lock=True,
+        server_port=args.port
     )
+    router = APIRouter()
+    add_server_api(router, device)
+    api_app.include_router(router, prefix="/extern_api")
+    print("API server started.", local_url)
+    app.block_thread()

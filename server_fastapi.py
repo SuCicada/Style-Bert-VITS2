@@ -2,9 +2,11 @@
 API server for TTS
 """
 import argparse
+import json
 import os
 import sys
 from io import BytesIO
+from pathlib import Path
 from typing import Dict, Optional, Union
 from urllib.parse import unquote
 
@@ -12,7 +14,7 @@ import GPUtil
 import psutil
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from scipy.io import wavfile
@@ -34,6 +36,8 @@ from common.tts_model import Model, ModelHolder
 from config import config
 
 ln = config.server_config.language
+
+limit = config.server_config.limit
 
 
 def raise_validation_error(msg: str, param: str):
@@ -63,84 +67,55 @@ def load_models(model_holder: ModelHolder):
         model_holder.models.append(model)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cpu", action="store_true", help="Use CPU instead of GPU")
-    parser.add_argument(
-        "--dir", "-d", type=str, help="Model directory", default=config.assets_root
-    )
-    args = parser.parse_args()
-
-    if args.cpu:
-        device = "cpu"
-    else:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    model_dir = args.dir
+def add_server_api(app: FastAPI | APIRouter,
+                   device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+    model_dir = str(Path(__file__).parent / "model_server")
+    print("model_dir", model_dir)
     model_holder = ModelHolder(model_dir, device)
-    if len(model_holder.model_names) == 0:
-        logger.error(f"Models not found in {model_dir}.")
-        sys.exit(1)
-
-    logger.info("Loading models...")
     load_models(model_holder)
-    limit = config.server_config.limit
-    app = FastAPI()
-    allow_origins = config.server_config.origins
-    if allow_origins:
-        logger.warning(
-            f"CORS allow_origins={config.server_config.origins}. If you don't want, modify config.yml"
-        )
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=config.server_config.origins,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-    app.logger = logger
+    print(model_holder.models)
 
     @app.get("/voice", response_class=AudioResponse)
     async def voice(
-        request: Request,
-        text: str = Query(..., min_length=1, max_length=limit, description=f"セリフ"),
-        encoding: str = Query(None, description="textをURLデコードする(ex, `utf-8`)"),
-        model_id: int = Query(0, description="モデルID。`GET /models/info`のkeyの値を指定ください"),
-        speaker_name: str = Query(
-            None, description="話者名(speaker_idより優先)。esd.listの2列目の文字列を指定"
-        ),
-        speaker_id: int = Query(
-            0, description="話者ID。model_assets>[model]>config.json内のspk2idを確認"
-        ),
-        sdp_ratio: float = Query(
-            DEFAULT_SDP_RATIO,
-            description="SDP(Stochastic Duration Predictor)/DP混合比。比率が高くなるほどトーンのばらつきが大きくなる",
-        ),
-        noise: float = Query(DEFAULT_NOISE, description="サンプルノイズの割合。大きくするほどランダム性が高まる"),
-        noisew: float = Query(
-            DEFAULT_NOISEW, description="SDPノイズ。大きくするほど発音の間隔にばらつきが出やすくなる"
-        ),
-        length: float = Query(
-            DEFAULT_LENGTH, description="話速。基準は1で大きくするほど音声は長くなり読み上げが遅まる"
-        ),
-        language: Languages = Query(ln, description=f"textの言語"),
-        auto_split: bool = Query(DEFAULT_LINE_SPLIT, description="改行で分けて生成"),
-        split_interval: float = Query(
-            DEFAULT_SPLIT_INTERVAL, description="分けた場合に挟む無音の長さ（秒）"
-        ),
-        assist_text: Optional[str] = Query(
-            None, description="このテキストの読み上げと似た声音・感情になりやすくなる。ただし抑揚やテンポ等が犠牲になる傾向がある"
-        ),
-        assist_text_weight: float = Query(
-            DEFAULT_ASSIST_TEXT_WEIGHT, description="assist_textの強さ"
-        ),
-        style: Optional[Union[int, str]] = Query(DEFAULT_STYLE, description="スタイル"),
-        style_weight: float = Query(DEFAULT_STYLE_WEIGHT, description="スタイルの強さ"),
-        reference_audio_path: Optional[str] = Query(None, description="スタイルを音声ファイルで行う"),
+            request: Request,
+            text: str = Query(..., min_length=1, max_length=limit, description=f"セリフ"),
+            encoding: str = Query(None, description="textをURLデコードする(ex, `utf-8`)"),
+            model_id: int = Query(0, description="モデルID。`GET /models/info`のkeyの値を指定ください"),
+            speaker_name: str = Query(
+                None, description="話者名(speaker_idより優先)。esd.listの2列目の文字列を指定"
+            ),
+            speaker_id: int = Query(
+                0, description="話者ID。model_assets>[model]>config.json内のspk2idを確認"
+            ),
+            sdp_ratio: float = Query(
+                DEFAULT_SDP_RATIO,
+                description="SDP(Stochastic Duration Predictor)/DP混合比。比率が高くなるほどトーンのばらつきが大きくなる",
+            ),
+            noise: float = Query(DEFAULT_NOISE, description="サンプルノイズの割合。大きくするほどランダム性が高まる"),
+            noisew: float = Query(
+                DEFAULT_NOISEW, description="SDPノイズ。大きくするほど発音の間隔にばらつきが出やすくなる"
+            ),
+            length: float = Query(
+                DEFAULT_LENGTH, description="話速。基準は1で大きくするほど音声は長くなり読み上げが遅まる"
+            ),
+            language: Languages = Query(ln, description=f"textの言語"),
+            auto_split: bool = Query(DEFAULT_LINE_SPLIT, description="改行で分けて生成"),
+            split_interval: float = Query(
+                DEFAULT_SPLIT_INTERVAL, description="分けた場合に挟む無音の長さ（秒）"
+            ),
+            assist_text: Optional[str] = Query(
+                None, description="このテキストの読み上げと似た声音・感情になりやすくなる。ただし抑揚やテンポ等が犠牲になる傾向がある"
+            ),
+            assist_text_weight: float = Query(
+                DEFAULT_ASSIST_TEXT_WEIGHT, description="assist_textの強さ"
+            ),
+            style: Optional[Union[int, str]] = Query(DEFAULT_STYLE, description="スタイル"),
+            style_weight: float = Query(DEFAULT_STYLE_WEIGHT, description="スタイルの強さ"),
+            reference_audio_path: Optional[str] = Query(None, description="スタイルを音声ファイルで行う"),
     ):
         """Infer text to speech(テキストから感情付き音声を生成する)"""
         logger.info(
-            f"{request.client.host}:{request.client.port}/voice  { unquote(str(request.query_params) )}"
+            f"{request.client.host}:{request.client.port}/voice  {unquote(str(request.query_params))}"
         )
         if model_id >= len(model_holder.models):  # /models/refresh があるためQuery(le)で表現不可
             raise_validation_error(f"model_id={model_id} not found", "model_id")
@@ -194,7 +169,7 @@ if __name__ == "__main__":
                 "model_path": model.model_path,
                 "device": model.device,
                 "spk2id": model.spk2id,
-                "id2spk": model.id2spk,
+                "id2spk": {str(k): v for k, v in model.id2spk.items()},
                 "style2id": model.style2id,
             }
         return result
@@ -244,11 +219,11 @@ if __name__ == "__main__":
 
     @app.get("/tools/get_audio", response_class=AudioResponse)
     def get_audio(
-        request: Request, path: str = Query(..., description="local wav path")
+            request: Request, path: str = Query(..., description="local wav path")
     ):
         """wavデータを取得する"""
         logger.info(
-            f"{request.client.host}:{request.client.port}/tools/get_audio  { unquote(str(request.query_params) )}"
+            f"{request.client.host}:{request.client.port}/tools/get_audio  {unquote(str(request.query_params))}"
         )
         if not os.path.isfile(path):
             raise_validation_error(f"path={path} not found", "path")
@@ -256,8 +231,52 @@ if __name__ == "__main__":
             raise_validation_error(f"wav file not found in {path}", "path")
         return FileResponse(path=path, media_type="audio/wav")
 
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cpu", action="store_true", help="Use CPU instead of GPU")
+    parser.add_argument(
+        "--dir", "-d", type=str, help="Model directory", default=config.assets_root
+    )
+    args = parser.parse_args()
+
+    if args.cpu:
+        device = "cpu"
+    else:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model_dir = args.dir
+    model_holder = ModelHolder(model_dir, device)
+    if len(model_holder.model_names) == 0:
+        logger.error(f"Models not found in {model_dir}.")
+        sys.exit(1)
+
+    logger.info("Loading models...")
+
+    load_models(model_holder)
+    app = FastAPI()
+    allow_origins = config.server_config.origins
+    if allow_origins:
+        logger.warning(
+            f"CORS allow_origins={config.server_config.origins}. If you don't want, modify config.yml"
+        )
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.server_config.origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    app.logger = logger
+
+    add_server_api(app)
+
     logger.info(f"server listen: http://127.0.0.1:{config.server_config.port}")
     logger.info(f"API docs: http://127.0.0.1:{config.server_config.port}/docs")
     uvicorn.run(
         app, port=config.server_config.port, host="0.0.0.0", log_level="warning"
     )
+
+
+if __name__ == "__main__":
+    main()
