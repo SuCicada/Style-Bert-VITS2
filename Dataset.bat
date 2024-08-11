@@ -2,8 +2,8 @@ chcp 65001 > NUL
 @echo off
 
 pushd %~dp0
-echo Running webui_dataset.py...
-venv\Scripts\python webui_dataset.py
+echo Running gradio_tabs/dataset.py...
+venv\Scripts\python gradio_tabs/dataset.py
 
 if %errorlevel% neq 0 ( pause & popd & exit /b %errorlevel% )
 

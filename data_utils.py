@@ -7,13 +7,16 @@ import torch
 import torch.utils.data
 from tqdm import tqdm
 
-import commons
-from config import config
+from config import get_config
 from mel_processing import mel_spectrogram_torch, spectrogram_torch
-from text import cleaned_text_to_sequence
-from common.log import logger
-from utils import load_filepaths_and_text, load_wav_to_torch
+from style_bert_vits2.logging import logger
+from style_bert_vits2.models import commons
+from style_bert_vits2.models.hyper_parameters import HyperParametersData
+from style_bert_vits2.models.utils import load_filepaths_and_text, load_wav_to_torch
+from style_bert_vits2.nlp import cleaned_text_to_sequence
 
+
+config = get_config()
 """Multi speaker version"""
 
 
@@ -24,7 +27,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
     3) computes spectrograms from audio files.
     """
 
-    def __init__(self, audiopaths_sid_text, hparams):
+    def __init__(self, audiopaths_sid_text: str, hparams: HyperParametersData):
         self.audiopaths_sid_text = load_filepaths_and_text(audiopaths_sid_text)
         self.max_wav_value = hparams.max_wav_value
         self.sampling_rate = hparams.sampling_rate
@@ -68,16 +71,16 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             self.audiopaths_sid_text, file=sys.stdout
         ):
             audiopath = f"{_id}"
-            if self.min_text_len <= len(phones) and len(phones) <= self.max_text_len:
-                phones = phones.split(" ")
-                tone = [int(i) for i in tone.split(" ")]
-                word2ph = [int(i) for i in word2ph.split(" ")]
-                audiopaths_sid_text_new.append(
-                    [audiopath, spk, language, text, phones, tone, word2ph]
-                )
-                lengths.append(os.path.getsize(audiopath) // (2 * self.hop_length))
-            else:
-                skipped += 1
+            # if self.min_text_len <= len(phones) and len(phones) <= self.max_text_len:
+            phones = phones.split(" ")
+            tone = [int(i) for i in tone.split(" ")]
+            word2ph = [int(i) for i in word2ph.split(" ")]
+            audiopaths_sid_text_new.append(
+                [audiopath, spk, language, text, phones, tone, word2ph]
+            )
+            lengths.append(os.path.getsize(audiopath) // (2 * self.hop_length))
+            # else:
+            #     skipped += 1
         logger.info(
             "skipped: "
             + str(skipped)
@@ -118,9 +121,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         audio, sampling_rate = load_wav_to_torch(filename)
         if sampling_rate != self.sampling_rate:
             raise ValueError(
-                "{} {} SR doesn't match target {} SR".format(
-                    filename, sampling_rate, self.sampling_rate
-                )
+                f"{filename} {sampling_rate} SR doesn't match target {self.sampling_rate} SR"
             )
         audio_norm = audio / self.max_wav_value
         audio_norm = audio_norm.unsqueeze(0)

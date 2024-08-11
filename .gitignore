@@ -1,8 +1,10 @@
-.vscode/
-
 __pycache__/
 venv/
+.venv/
+dist/
+.coverage
 .ipynb_checkpoints/
+.ruff_cache/
 
 /*.yml
 !/default_config.yml
@@ -11,6 +13,8 @@ venv/
 /bert/*/*.model
 /bert/*/*.safetensors
 /bert/*/*.msgpack
+
+/configs/paths.yml
 
 /pretrained/*.safetensors
 /pretrained/*.pth
@@ -21,6 +25,9 @@ venv/
 /slm/*/*.bin
 
 /scripts/test/
+/scripts/lib/
+/scripts/Style-Bert-VITS2/
+/scripts/sbv2/
 *.zip
 *.csv
 *.bak
@@ -28,6 +35,12 @@ venv/
 
 safetensors.ipynb
 *.wav
+/static/
+
+# pyopenjtalk's dictionary
+*.dic
+
+playground.ipynb
 
 /inputs
 /.idea

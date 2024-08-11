@@ -6,6 +6,7 @@ import platform
 
 import torch
 import torch.distributed as dist
+from huggingface_hub import HfApi
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -14,12 +15,8 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 # logging.getLogger("numba").setLevel(logging.WARNING)
-import commons
 import default_style
-import utils
-from common.log import logger
-from common.stdout_wrapper import SAFE_STDOUT
-from config import config
+from config import get_config
 from data_utils import (
     DistributedBucketSampler,
     TextAudioSpeakerCollate,
@@ -27,8 +24,17 @@ from data_utils import (
 )
 from losses import discriminator_loss, feature_loss, generator_loss, kl_loss
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
-from models import DurationDiscriminator, MultiPeriodDiscriminator, SynthesizerTrn
-from text.symbols import symbols
+from style_bert_vits2.logging import logger
+from style_bert_vits2.models import commons, utils
+from style_bert_vits2.models.hyper_parameters import HyperParameters
+from style_bert_vits2.models.models import (
+    DurationDiscriminator,
+    MultiPeriodDiscriminator,
+    SynthesizerTrn,
+)
+from style_bert_vits2.nlp.symbols import SYMBOLS
+from style_bert_vits2.utils.stdout_wrapper import SAFE_STDOUT
+
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = (
@@ -42,8 +48,10 @@ torch.backends.cuda.enable_mem_efficient_sdp(
 )  # Not available if torch version is lower than 2.0
 torch.backends.cuda.enable_math_sdp(True)
 
-
+config = get_config()
 global_step = 0
+
+api = HfApi()
 
 
 def run():
@@ -84,6 +92,16 @@ def run():
         action="store_true",
         help="Speed up training by disabling logging and evaluation.",
     )
+    parser.add_argument(
+        "--repo_id",
+        help="Huggingface model repo id to backup the model.",
+        default=None,
+    )
+    parser.add_argument(
+        "--not_use_custom_batch_sampler",
+        help="Don't use custom batch sampler for training, which was used in the version < 2.5",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     # Set log file
@@ -95,7 +113,7 @@ def run():
     envs = config.train_ms_config.env
     for env_name, env_value in envs.items():
         if env_name not in os.environ.keys():
-            logger.info("Loading configuration from config {}".format(str(env_value)))
+            logger.info(f"Loading configuration from config {env_value!s}")
             os.environ[env_name] = str(env_value)
     logger.info(
         "Loading environment variables \nMASTER_ADDR: {},\nMASTER_PORT: {},\nWORLD_SIZE: {},\nRANK: {},\nLOCAL_RANK: {}".format(
@@ -119,16 +137,17 @@ def run():
     local_rank = int(os.environ["LOCAL_RANK"])
     n_gpus = dist.get_world_size()
 
-    hps = utils.get_hparams_from_file(args.config)
+    hps = HyperParameters.load_from_json(args.config)
     # This is needed because we have to pass values to `train_and_evaluate()`
     hps.model_dir = model_dir
     hps.speedup = args.speedup
+    hps.repo_id = args.repo_id
 
     # 比较路径是否相同
     if os.path.realpath(args.config) != os.path.realpath(
         config.train_ms_config.config_path
     ):
-        with open(args.config, "r", encoding="utf-8") as f:
+        with open(args.config, encoding="utf-8") as f:
             data = f.read()
         os.makedirs(os.path.dirname(config.train_ms_config.config_path), exist_ok=True)
         with open(config.train_ms_config.config_path, "w", encoding="utf-8") as f:
@@ -151,16 +170,38 @@ def run():
     config.out_dir: The directory for model assets of this model (for inference).
         default: `model_assets/{model_name}`.
     """
+
+    if args.repo_id is not None:
+        # First try to upload config.json to check if the repo exists
+        try:
+            api.upload_file(
+                path_or_fileobj=args.config,
+                path_in_repo=f"Data/{config.model_name}/config.json",
+                repo_id=hps.repo_id,
+            )
+        except Exception as e:
+            logger.error(e)
+            logger.error(
+                f"Failed to upload files to the repo {hps.repo_id}. Please check if the repo exists and you have logged in using `huggingface-cli login`."
+            )
+            raise e
+        # Upload Data dir for resuming training
+        api.upload_folder(
+            repo_id=hps.repo_id,
+            folder_path=config.dataset_path,
+            path_in_repo=f"Data/{config.model_name}",
+            delete_patterns="*.pth",  # Only keep the latest checkpoint
+            run_as_future=True,
+        )
+
     os.makedirs(config.out_dir, exist_ok=True)
 
     if not args.skip_default_style:
-        # Save default style to out_dir
-        default_style.set_style_config(
-            args.config, os.path.join(config.out_dir, "config.json")
-        )
-        default_style.save_mean_vector(
+        default_style.save_styles_by_dirs(
             os.path.join(args.model, "wavs"),
-            os.path.join(config.out_dir, "style_vectors.npy"),
+            config.out_dir,
+            config_path=args.config,
+            config_output_path=os.path.join(config.out_dir, "config.json"),
         )
 
     torch.manual_seed(hps.train.seed)
@@ -176,28 +217,45 @@ def run():
         writer = SummaryWriter(log_dir=model_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(model_dir, "eval"))
     train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps.data)
-    train_sampler = DistributedBucketSampler(
-        train_dataset,
-        hps.train.batch_size,
-        [32, 300, 400, 500, 600, 700, 800, 900, 1000],
-        num_replicas=n_gpus,
-        rank=rank,
-        shuffle=True,
-    )
     collate_fn = TextAudioSpeakerCollate()
-    train_loader = DataLoader(
-        train_dataset,
-        # メモリ消費量を減らそうとnum_workersを1にしてみる
-        # num_workers=min(config.train_ms_config.num_workers, os.cpu_count() // 2),
-        num_workers=1,
-        shuffle=False,
-        pin_memory=True,
-        collate_fn=collate_fn,
-        batch_sampler=train_sampler,
-        persistent_workers=True,
-        # これもメモリ消費量を減らそうとしてコメントアウト
-        # prefetch_factor=4,
-    )  # DataLoader config could be adjusted.
+    if not args.not_use_custom_batch_sampler:
+        train_sampler = DistributedBucketSampler(
+            train_dataset,
+            hps.train.batch_size,
+            [32, 300, 400, 500, 600, 700, 800, 900, 1000],
+            num_replicas=n_gpus,
+            rank=rank,
+            shuffle=True,
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            # メモリ消費量を減らそうとnum_workersを1にしてみる
+            # num_workers=min(config.train_ms_config.num_workers, os.cpu_count() // 2),
+            num_workers=1,
+            shuffle=False,
+            pin_memory=True,
+            collate_fn=collate_fn,
+            batch_sampler=train_sampler,
+            # batch_size=hps.train.batch_size,
+            persistent_workers=True,
+            # これもメモリ消費量を減らそうとしてコメントアウト
+            # prefetch_factor=6,
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            # メモリ消費量を減らそうとnum_workersを1にしてみる
+            # num_workers=min(config.train_ms_config.num_workers, os.cpu_count() // 2),
+            num_workers=1,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=collate_fn,
+            # batch_sampler=train_sampler,
+            batch_size=hps.train.batch_size,
+            persistent_workers=True,
+            # これもメモリ消費量を減らそうとしてコメントアウト
+            # prefetch_factor=6,
+        )
     eval_dataset = None
     eval_loader = None
     if rank == 0 and not args.speedup:
@@ -211,10 +269,7 @@ def run():
             drop_last=False,
             collate_fn=collate_fn,
         )
-    if (
-        "use_noise_scaled_mas" in hps.model.keys()
-        and hps.model.use_noise_scaled_mas is True
-    ):
+    if hps.model.use_noise_scaled_mas is True:
         logger.info("Using noise scaled MAS for VITS2")
         mas_noise_scale_initial = 0.01
         noise_scale_delta = 2e-6
@@ -222,10 +277,7 @@ def run():
         logger.info("Using normal MAS for VITS1")
         mas_noise_scale_initial = 0.0
         noise_scale_delta = 0.0
-    if (
-        "use_duration_discriminator" in hps.model.keys()
-        and hps.model.use_duration_discriminator is True
-    ):
+    if hps.model.use_duration_discriminator is True:
         logger.info("Using duration discriminator for VITS2")
         net_dur_disc = DurationDiscriminator(
             hps.model.hidden_channels,
@@ -234,10 +286,7 @@ def run():
             0.1,
             gin_channels=hps.model.gin_channels if hps.data.n_speakers != 0 else 0,
         ).cuda(local_rank)
-    if (
-        "use_spk_conditioned_encoder" in hps.model.keys()
-        and hps.model.use_spk_conditioned_encoder is True
-    ):
+    if hps.model.use_spk_conditioned_encoder is True:
         if hps.data.n_speakers == 0:
             raise ValueError(
                 "n_speakers must be > 0 when using spk conditioned encoder to train multi-speaker model"
@@ -246,13 +295,35 @@ def run():
         logger.info("Using normal encoder for VITS1")
 
     net_g = SynthesizerTrn(
-        len(symbols),
+        len(SYMBOLS),
         hps.data.filter_length // 2 + 1,
         hps.train.segment_size // hps.data.hop_length,
         n_speakers=hps.data.n_speakers,
         mas_noise_scale_initial=mas_noise_scale_initial,
         noise_scale_delta=noise_scale_delta,
-        **hps.model,
+        # hps.model 以下のすべての値を引数に渡す
+        use_spk_conditioned_encoder=hps.model.use_spk_conditioned_encoder,
+        use_noise_scaled_mas=hps.model.use_noise_scaled_mas,
+        use_mel_posterior_encoder=hps.model.use_mel_posterior_encoder,
+        use_duration_discriminator=hps.model.use_duration_discriminator,
+        use_wavlm_discriminator=hps.model.use_wavlm_discriminator,
+        inter_channels=hps.model.inter_channels,
+        hidden_channels=hps.model.hidden_channels,
+        filter_channels=hps.model.filter_channels,
+        n_heads=hps.model.n_heads,
+        n_layers=hps.model.n_layers,
+        kernel_size=hps.model.kernel_size,
+        p_dropout=hps.model.p_dropout,
+        resblock=hps.model.resblock,
+        resblock_kernel_sizes=hps.model.resblock_kernel_sizes,
+        resblock_dilation_sizes=hps.model.resblock_dilation_sizes,
+        upsample_rates=hps.model.upsample_rates,
+        upsample_initial_channel=hps.model.upsample_initial_channel,
+        upsample_kernel_sizes=hps.model.upsample_kernel_sizes,
+        n_layers_q=hps.model.n_layers_q,
+        use_spectral_norm=hps.model.use_spectral_norm,
+        gin_channels=hps.model.gin_channels,
+        slm=hps.model.slm,
     ).cuda(local_rank)
 
     if getattr(hps.train, "freeze_ZH_bert", False):
@@ -272,6 +343,11 @@ def run():
     if getattr(hps.train, "freeze_style", False):
         logger.info("Freezing style encoder !!!")
         for param in net_g.enc_p.style_proj.parameters():
+            param.requires_grad = False
+
+    if getattr(hps.train, "freeze_decoder", False):
+        logger.info("Freezing decoder !!!")
+        for param in net_g.dec.parameters():
             param.requires_grad = False
 
     net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(local_rank)
@@ -306,31 +382,25 @@ def run():
 
     if utils.is_resuming(model_dir):
         if net_dur_disc is not None:
-            _, _, dur_resume_lr, epoch_str = utils.load_checkpoint(
-                utils.latest_checkpoint_path(model_dir, "DUR_*.pth"),
+            _, _, dur_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
+                utils.checkpoints.get_latest_checkpoint_path(model_dir, "DUR_*.pth"),
                 net_dur_disc,
                 optim_dur_disc,
-                skip_optimizer=(
-                    hps.train.skip_optimizer if "skip_optimizer" in hps.train else True
-                ),
+                skip_optimizer=hps.train.skip_optimizer,
             )
             if not optim_dur_disc.param_groups[0].get("initial_lr"):
                 optim_dur_disc.param_groups[0]["initial_lr"] = dur_resume_lr
-        _, optim_g, g_resume_lr, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path(model_dir, "G_*.pth"),
+        _, optim_g, g_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
+            utils.checkpoints.get_latest_checkpoint_path(model_dir, "G_*.pth"),
             net_g,
             optim_g,
-            skip_optimizer=(
-                hps.train.skip_optimizer if "skip_optimizer" in hps.train else True
-            ),
+            skip_optimizer=hps.train.skip_optimizer,
         )
-        _, optim_d, d_resume_lr, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path(model_dir, "D_*.pth"),
+        _, optim_d, d_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
+            utils.checkpoints.get_latest_checkpoint_path(model_dir, "D_*.pth"),
             net_d,
             optim_d,
-            skip_optimizer=(
-                hps.train.skip_optimizer if "skip_optimizer" in hps.train else True
-            ),
+            skip_optimizer=hps.train.skip_optimizer,
         )
         if not optim_g.param_groups[0].get("initial_lr"):
             optim_g.param_groups[0]["initial_lr"] = g_resume_lr
@@ -340,21 +410,23 @@ def run():
         epoch_str = max(epoch_str, 1)
         # global_step = (epoch_str - 1) * len(train_loader)
         global_step = int(
-            utils.get_steps(utils.latest_checkpoint_path(model_dir, "G_*.pth"))
+            utils.get_steps(
+                utils.checkpoints.get_latest_checkpoint_path(model_dir, "G_*.pth")
+            )
         )
         logger.info(
             f"******************Found the model. Current epoch is {epoch_str}, gloabl step is {global_step}*********************"
         )
     else:
         try:
-            _ = utils.load_safetensors(
+            _ = utils.safetensors.load_safetensors(
                 os.path.join(model_dir, "G_0.safetensors"), net_g
             )
-            _ = utils.load_safetensors(
+            _ = utils.safetensors.load_safetensors(
                 os.path.join(model_dir, "D_0.safetensors"), net_d
             )
             if net_dur_disc is not None:
-                _ = utils.load_safetensors(
+                _ = utils.safetensors.load_safetensors(
                     os.path.join(model_dir, "DUR_0.safetensors"), net_dur_disc
                 )
             logger.info("Loaded the pretrained models.")
@@ -447,29 +519,32 @@ def run():
 
         if epoch == hps.train.epochs:
             # Save the final models
-            utils.save_checkpoint(
+            assert optim_g is not None
+            utils.checkpoints.save_checkpoint(
                 net_g,
                 optim_g,
                 hps.train.learning_rate,
                 epoch,
-                os.path.join(model_dir, "G_{}.pth".format(global_step)),
+                os.path.join(model_dir, f"G_{global_step}.pth"),
             )
-            utils.save_checkpoint(
+            assert optim_d is not None
+            utils.checkpoints.save_checkpoint(
                 net_d,
                 optim_d,
                 hps.train.learning_rate,
                 epoch,
-                os.path.join(model_dir, "D_{}.pth".format(global_step)),
+                os.path.join(model_dir, f"D_{global_step}.pth"),
             )
             if net_dur_disc is not None:
-                utils.save_checkpoint(
+                assert optim_dur_disc is not None
+                utils.checkpoints.save_checkpoint(
                     net_dur_disc,
                     optim_dur_disc,
                     hps.train.learning_rate,
                     epoch,
-                    os.path.join(model_dir, "DUR_{}.pth".format(global_step)),
+                    os.path.join(model_dir, f"DUR_{global_step}.pth"),
                 )
-            utils.save_safetensors(
+            utils.safetensors.save_safetensors(
                 net_g,
                 epoch,
                 os.path.join(
@@ -478,6 +553,25 @@ def run():
                 ),
                 for_infer=True,
             )
+            if hps.repo_id is not None:
+                future1 = api.upload_folder(
+                    repo_id=hps.repo_id,
+                    folder_path=config.dataset_path,
+                    path_in_repo=f"Data/{config.model_name}",
+                    delete_patterns="*.pth",  # Only keep the latest checkpoint
+                    run_as_future=True,
+                )
+                future2 = api.upload_folder(
+                    repo_id=hps.repo_id,
+                    folder_path=config.out_dir,
+                    path_in_repo=f"model_assets/{config.model_name}",
+                    run_as_future=True,
+                )
+                try:
+                    future1.result()
+                    future2.result()
+                except Exception as e:
+                    logger.error(e)
 
     if pbar is not None:
         pbar.close()
@@ -487,7 +581,7 @@ def train_and_evaluate(
     rank,
     local_rank,
     epoch,
-    hps,
+    hps: HyperParameters,
     nets,
     optims,
     schedulers,
@@ -683,34 +777,32 @@ def train_and_evaluate(
                         "loss/g/kl": loss_kl,
                     }
                 )
+                scalar_dict.update({f"loss/g/{i}": v for i, v in enumerate(losses_gen)})
                 scalar_dict.update(
-                    {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
+                    {f"loss/d_r/{i}": v for i, v in enumerate(losses_disc_r)}
                 )
                 scalar_dict.update(
-                    {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
+                    {f"loss/d_g/{i}": v for i, v in enumerate(losses_disc_g)}
                 )
-                scalar_dict.update(
-                    {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
-                )
-
-                image_dict = {
-                    "slice/mel_org": utils.plot_spectrogram_to_numpy(
-                        y_mel[0].data.cpu().numpy()
-                    ),
-                    "slice/mel_gen": utils.plot_spectrogram_to_numpy(
-                        y_hat_mel[0].data.cpu().numpy()
-                    ),
-                    "all/mel": utils.plot_spectrogram_to_numpy(
-                        mel[0].data.cpu().numpy()
-                    ),
-                    "all/attn": utils.plot_alignment_to_numpy(
-                        attn[0, 0].data.cpu().numpy()
-                    ),
-                }
+                # 以降のログは計算が重い気がするし誰も見てない気がするのでコメントアウト
+                # image_dict = {
+                #     "slice/mel_org": utils.plot_spectrogram_to_numpy(
+                #         y_mel[0].data.cpu().numpy()
+                #     ),
+                #     "slice/mel_gen": utils.plot_spectrogram_to_numpy(
+                #         y_hat_mel[0].data.cpu().numpy()
+                #     ),
+                #     "all/mel": utils.plot_spectrogram_to_numpy(
+                #         mel[0].data.cpu().numpy()
+                #     ),
+                #     "all/attn": utils.plot_alignment_to_numpy(
+                #         attn[0, 0].data.cpu().numpy()
+                #     ),
+                # }
                 utils.summarize(
                     writer=writer,
                     global_step=global_step,
-                    images=image_dict,
+                    # images=image_dict,
                     scalars=scalar_dict,
                 )
 
@@ -721,37 +813,38 @@ def train_and_evaluate(
             ):
                 if not hps.speedup:
                     evaluate(hps, net_g, eval_loader, writer_eval)
-                utils.save_checkpoint(
+                assert hps.model_dir is not None
+                utils.checkpoints.save_checkpoint(
                     net_g,
                     optim_g,
                     hps.train.learning_rate,
                     epoch,
-                    os.path.join(hps.model_dir, "G_{}.pth".format(global_step)),
+                    os.path.join(hps.model_dir, f"G_{global_step}.pth"),
                 )
-                utils.save_checkpoint(
+                utils.checkpoints.save_checkpoint(
                     net_d,
                     optim_d,
                     hps.train.learning_rate,
                     epoch,
-                    os.path.join(hps.model_dir, "D_{}.pth".format(global_step)),
+                    os.path.join(hps.model_dir, f"D_{global_step}.pth"),
                 )
                 if net_dur_disc is not None:
-                    utils.save_checkpoint(
+                    utils.checkpoints.save_checkpoint(
                         net_dur_disc,
                         optim_dur_disc,
                         hps.train.learning_rate,
                         epoch,
-                        os.path.join(hps.model_dir, "DUR_{}.pth".format(global_step)),
+                        os.path.join(hps.model_dir, f"DUR_{global_step}.pth"),
                     )
                 keep_ckpts = config.train_ms_config.keep_ckpts
                 if keep_ckpts > 0:
-                    utils.clean_checkpoints(
-                        path_to_models=hps.model_dir,
+                    utils.checkpoints.clean_checkpoints(
+                        model_dir_path=hps.model_dir,
                         n_ckpts_to_keep=keep_ckpts,
                         sort_by_time=True,
                     )
                 # Save safetensors (for inference) to `model_assets/{model_name}`
-                utils.save_safetensors(
+                utils.safetensors.save_safetensors(
                     net_g,
                     epoch,
                     os.path.join(
@@ -760,13 +853,25 @@ def train_and_evaluate(
                     ),
                     for_infer=True,
                 )
+                if hps.repo_id is not None:
+                    api.upload_folder(
+                        repo_id=hps.repo_id,
+                        folder_path=config.dataset_path,
+                        path_in_repo=f"Data/{config.model_name}",
+                        delete_patterns="*.pth",  # Only keep the latest checkpoint
+                        run_as_future=True,
+                    )
+                    api.upload_folder(
+                        repo_id=hps.repo_id,
+                        folder_path=config.out_dir,
+                        path_in_repo=f"model_assets/{config.model_name}",
+                        run_as_future=True,
+                    )
 
         global_step += 1
         if pbar is not None:
             pbar.set_description(
-                "Epoch {}({:.0f}%)/{}".format(
-                    epoch, 100.0 * batch_idx / len(train_loader), hps.train.epochs
-                )
+                f"Epoch {epoch}({100.0 * batch_idx / len(train_loader):.0f}%)/{hps.train.epochs}"
             )
             pbar.update()
     # 本家ではこれをスピードアップのために消すと書かれていたので、一応消してみる
@@ -781,6 +886,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
     generator.eval()
     image_dict = {}
     audio_dict = {}
+    print()
     logger.info("Evaluating ...")
     with torch.no_grad():
         for batch_idx, (
@@ -824,44 +930,44 @@ def evaluate(hps, generator, eval_loader, writer_eval):
                     sdp_ratio=0.0 if not use_sdp else 1.0,
                 )
                 y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
-
-                mel = spec_to_mel_torch(
-                    spec,
-                    hps.data.filter_length,
-                    hps.data.n_mel_channels,
-                    hps.data.sampling_rate,
-                    hps.data.mel_fmin,
-                    hps.data.mel_fmax,
-                )
-                y_hat_mel = mel_spectrogram_torch(
-                    y_hat.squeeze(1).float(),
-                    hps.data.filter_length,
-                    hps.data.n_mel_channels,
-                    hps.data.sampling_rate,
-                    hps.data.hop_length,
-                    hps.data.win_length,
-                    hps.data.mel_fmin,
-                    hps.data.mel_fmax,
-                )
-                image_dict.update(
-                    {
-                        f"gen/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
-                            y_hat_mel[0].cpu().numpy()
-                        )
-                    }
-                )
+                # 以降のログは計算が重い気がするし誰も見てない気がするのでコメントアウト
+                # mel = spec_to_mel_torch(
+                #     spec,
+                #     hps.data.filter_length,
+                #     hps.data.n_mel_channels,
+                #     hps.data.sampling_rate,
+                #     hps.data.mel_fmin,
+                #     hps.data.mel_fmax,
+                # )
+                # y_hat_mel = mel_spectrogram_torch(
+                #     y_hat.squeeze(1).float(),
+                #     hps.data.filter_length,
+                #     hps.data.n_mel_channels,
+                #     hps.data.sampling_rate,
+                #     hps.data.hop_length,
+                #     hps.data.win_length,
+                #     hps.data.mel_fmin,
+                #     hps.data.mel_fmax,
+                # )
+                # image_dict.update(
+                #     {
+                #         f"gen/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
+                #             y_hat_mel[0].cpu().numpy()
+                #         )
+                #     }
+                # )
+                # image_dict.update(
+                #     {
+                #         f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
+                #             mel[0].cpu().numpy()
+                #         )
+                #     }
+                # )
                 audio_dict.update(
                     {
                         f"gen/audio_{batch_idx}_{use_sdp}": y_hat[
                             0, :, : y_hat_lengths[0]
                         ]
-                    }
-                )
-                image_dict.update(
-                    {
-                        f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
-                            mel[0].cpu().numpy()
-                        )
                     }
                 )
                 audio_dict.update({f"gt/audio_{batch_idx}": y[0, :, : y_lengths[0]]})

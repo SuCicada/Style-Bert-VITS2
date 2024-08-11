@@ -1,5 +1,236 @@
 # Changelog
 
+## v2.6.0 (2024-06-16)
+
+### 新機能
+モデルのマージ時に、今までの `new = (1 - weight) * A + weight * B` の他に、次を追加
+- `new = A + weight * (B - C)`: 差分マージ
+- `new = a * A + b * B + c * C`: 加重和マージ
+- `new = A + weight * B`: ヌルモデルのマージ
+差分マージは、例えばBを「Cと同じ話者だけど囁いているモデル」とすると、`B - C`が囁きベクトル的なものだと思えるので、それをAに足すことで、Aの話者が囁いているような音声を生成できるようになります。
+
+また、加重和で`new = A - B`を作って、それをヌルモデルマージで別のモデルに足せば、実質差分マージを実現できます。また謎に`new = -A`や`new = 41 * A`等のモデルも作ることができます。
+
+これらのマージの活用法については各自いろいろ考えて実験してみて、面白い使い方があればぜひ共有してください。
+
+囁きについて実験的に作ったヌルモデルを[こちら](https://huggingface.co/litagin/sbv2_null_models)に置いています。これをヌルモデルマージで使うことで、任意のモデルを囁きモデルにある程度は変換できます。
+
+### 改善？
+
+- WebUIの`App.bat`の起動が少し重いので、それぞれの機能を分割した`Dataset.bat`, `Inference.bat`, `Merge.bat`, `StyleVectors.bat`, `Train.bat`を追加 (今までの`App.bat`もこれまで通り使えます)
+
+## v2.5.1 (2024-06-14)
+
+ライセンスとのコンフリクトから、[利用規約](/docs/TERMS_OF_USE.md)を[開発陣からのお願いとデフォルトモデルの利用規約](/docs/TERMS_OF_USE.md)に変更しました。
+
+## v2.5.0 (2024-06-02)
+
+このバージョンから[利用規約](/docs/TERMS_OF_USE.md)が追加されました。ご利用の際は必ずお読みください。
+
+### 新機能等
+
+- デフォルトモデルに [あみたろの声素材工房](https://amitaro.net/) のあみたろ様が公開しているコーパスとライブ配信音声を利用して学習した[**小春音アミ**](https://huggingface.co/litagin/sbv2_koharune_ami)と[**あみたろ**](https://huggingface.co/litagin/sbv2_amitaro)モデルを追加（あみたろ様には事前に連絡して許諾を得ています）
+    - アプデの場合は`Initialize.bat`をダブルクリックすればモデルをダウンロードできます（手動でダウンロードして`model_assets`フォルダに入れることも可能）
+- 学習時に音声データをスタイルごとにフォルダ分けしておくことで、そのフォルダごとのスタイルを学習時に自動的に作成するように
+    - `inputs`からスライスして使う場合は`inputs`直下に作りたいスタイルだけサブフォルダを作りそこに音声ファイルを配置
+    - `Data/モデル名/raw`から使う場合も`raw`直下に同様に配置
+    - サブフォルダの個数が0または1の場合は、今まで通りのNeutralスタイルのみが作成されます
+- batファイルでのインストールの大幅な高速化（Pythonのライブラリインストールに[uv](https://github.com/astral-sh/uv)を使用）
+- 学習時に「カスタムバッチサンプラーを無効化」オプションを追加。これにより、長い音声ファイルも学習に使われるようになりますが、使用VRAMがかなり増えたり学習が不安定になる可能性があります。
+- [よくある質問](/docs/FAQ.md)を追加
+- 英語の音声合成の速度向上（[gordon0414](https://github.com/gordon0414)さんによる[PR](https://github.com/litagin02/Style-Bert-VITS2/pull/124)です、ありがとうございます！）
+- エディターの各種機能改善（多くが[kamexy](https://github.com/kamexy)様による[エディターリポジトリ](https://github.com/litagin02/Style-Bert-VITS2-Editor)へのプルリク群です、ありがとうございます！）
+    - 選択した行の下に新規の行を作成できるように
+    - Mac使用時に日本語変換のエンターで音声合成が走るバグの修正
+    - ペースト時に改行を含まない場合は通常のペーストの振る舞いになるように修正
+
+
+### その他の改善
+
+- 上のスタイル自動作成機能を既存モデルでも使えるような機能追加。具体的には、スタイル作成タブにて、フォルダ分けされた音声ファイルのディレクトリを任意に指定し、そのフォルダ分けを使って既存のモデルのスタイルの作成が可能に
+- 音声書き起こしに[kotoba-whisper](https://huggingface.co/kotoba-tech/kotoba-whisper-v1.1)を追加
+- 音声書き起こし時にHugging FaceのWhisperモデルを使う際に、書き起こしを順次保存するように改善
+- 音声書き起こしのデフォルトをfaster-whiperからHugging FaceのWhisperモデルへ変更
+- （**ライブラリとしてのみ**）依存関係の軽量化、音声合成時に読み上げテキストの読みを表す音素列を指定する機能を追加 + 様々な改善 ([tsukumijimaさん](https://github.com/tsukumijima)による[プルリク](https://github.com/litagin02/Style-Bert-VITS2/pull/118)です、ありがとうございます！)
+
+### 内部変更
+
+- これまでpath管理に`configs/paths.yml`を使っていたが、`configs/default_paths.yml`にリネームし、`configs/paths.yml`はgitの管理対象外に変更
+
+### バグ修正
+
+- Gradioのアップデートにより、モデル選択時やスタイルのDBSCAN作成時等に`TypeError: Type is not JSON serializable: WindowsPath`のようなエラーが出る問題を修正
+- TensorboardをWebUIから立ち上げた際にエラーが出る問題の修正 ([#129](https://github.com/litagin02/Style-Bert-VITS2/issues/129))
+
+
+## v2.4.1 (2024-03-16)
+
+**batファイルでのインストール・アップデート方法の変更**（それ以外の変更はありません）
+
+諸事情により、インストール・アップデートのbatファイルを変更しました（Gitが使えないのでバージョンアップ時のアップデートの対応が困難だったため、Gitがない環境の場合はPortableGitをダウンロードして使うように）。
+
+伴って、これまでWindowsでbatファイルをダブルクリックしてインストールしていた方は**再インストールが必須**となります。大変申し訳ありません。
+
+### インストール手順
+
+（インストールの流れは変わりませんが、batファイルは変わっているので、新しいzipを必ずダウンロードしてください）
+
+- [sbv2.zip](https://github.com/litagin02/Style-Bert-VITS2/releases/download/2.4.1/sbv2.zip)をダウンロードし、解凍してください。
+- グラボがある方は、`Install-Style-Bert-VITS2.bat`をダブルクリックします。
+- グラボがない方は、`Install-Style-Bert-VITS2-CPU.bat`をダブルクリックします。CPU版では学習はできませんが、音声合成とマージは可能です。
+
+### アップデート手順
+
+**以前のバージョンからのアップデート**
+
+今までの環境を全て削除して新しくインストールする必要があります。
+移行方法：
+- 重要なデータが入っている可能性のある`Data`フォルダと`model_assets`フォルダをバックアップ
+- 上のインストール手順から、新しい場所にStyle-Bert-VITS2をインストール
+- インストールが終了したら、バックアップした`Data`フォルダと`model_assets`フォルダを新しい`Style-Bert-VITS2`フォルダにコピー
+- これまでインストールされていたフォルダ（batファイルたち含む）は削除しても構いません
+
+**今後のアップデート**
+
+今後は、新しくインストールされた中の`Update-Style-Bert-VITS2.bat`をダブルクリックしてください。今までの`Update-Style-Bert-VITS2.bat`等のファイルは使えません。
+
+## v2.4.0 (2024-03-15)
+
+大規模リファクタリング・日本語処理のワーカー化と機能追加等。データセット作り・学習・音声合成・マージ・スタイルWebUIは全て`app.py` (`App.bat`) へ統一されましたのでご注意ください。
+
+### アップデート手順
+- 2.3未満（辞書・エディター追加前）からのアップデートの場合は、[Update-to-Dict-Editor.bat](https://github.com/litagin02/Style-Bert-VITS2/releases/download/2.4.0/Update-to-Dict-Editor.bat)をダウンロードし、`Style-Bert-VITS2`フォルダがある場所（インストールbatファイルとかがあったところ）においてダブルクリックしてください。
+- それ以外の場合は、単純に今までの`Update-Style-Bert-VITS2.bat`でアップデートできます。
+- ただしアップデートにより多くのファイルが移動したり不要になったりしたので、それらを削除したい場合は[Clean.bat](https://github.com/litagin02/Style-Bert-VITS2/releases/download/2.4.0/Clean.bat)を`Update-Style-Bert-VITS2.bat`と同じ場所に保存して実行してください。
+
+### 内部改善
+
+- [tsukumijimaさんによる大規模リファクタリングのプルリク](https://github.com/litagin02/Style-Bert-VITS2/pull/92) によって、内部コードが非常に整理され可読性が高まりライブラリ化もされた。[tsukumijimaさん](https://github.com/tsukumijima) 大変な作業を本当にありがとうございます！
+- ライブラリとして`pip install style-bert-vits2`によりすぐにインストールでき、音声合成部分の機能が使えます（使用例は[/library.ipynb](/library.ipynb)を参照してください）
+- その他このプルリクに動機づけられ、多くのコードのリファクタリング・型アノテーションの追加等を行った
+- 日本語処理のpyopenjtalkをソケット通信を用いて別プロセス化し、複数同時に学習や音声合成を立ち上げても辞書の競合エラーが起きないように。[kale4eat](https://github.com/kale4eat) さんによる[PR](https://github.com/litagin02/Style-Bert-VITS2/pull/89) です、ありがとうございます！
+
+### バグ修正
+
+- 上記にもある通り、音声合成と学習前処理など、日本語処理を扱うものを2つ以上起動しようとするとエラーが発生する仕様の解決。ユーザー辞書は追加すれば常にどこからでも適応されます。
+- `raw`フォルダの直下でなくサブフォルダ内に音声ファイルがある場合に、`wavs`フォルダでもその構造が保たれてしまい、書き起こしファイルとの整合性が取れなくなる挙動を修正し、常に`wav`フォルダ直下へ`wav`ファイルを保存するように変更
+- スライス時に元ファイル名にピリオド `.` が含まれると、スライス後のファイル名がおかしくなるバグの修正
+
+### 機能改善・追加
+
+- 各種WebUIを一つ`app.py` `App.bat` に統一
+- その他以下の変更や、軽微なUI・説明文の改善等
+
+**データセット作成**
+
+- スライス処理の高速化（マルチスレッドにした、大量にスライス元ファイルファイルがある場合に高速になります）、またスライス元のファイルを`wav`以外の`mp3`や`ogg`などの形式にも対応
+- スライス処理時に、ファイル名にスライスされた開始終了区間を含めるオプションを追加（[aka7774](https://github.com/aka7774) さんによるPRです、ありがとうございます！）
+- 書き起こしの高速化、またHugging FaceのWhisperモデルを使うオプションを追加。バッチサイズを上げることでVRAMを食う代わりに速度が大幅に向上します。
+
+**学習**
+
+- 学習元の音声ファイル（`Data/モデル名/raw`にいれるやつ）を、`wav`以外の`mp3`や`ogg`などの形式にも対応（前処理段階で自動的に`wav`ファイルに変換されます）（ただし変わらず1ファイル2-12秒程度の範囲の長さが望ましい）
+
+**音声合成**
+
+- 音声合成時に、生成音声の音の高さ（音高）と抑揚の幅を調整できるように（ただし音質が少し劣化する）。`App.bat`や`Editor.bat`のどちらからでも使えます。
+- `Editor.bat`の複数話者モデルでの話者指定を可能に
+- `Editor.bat`で、改行を含む文字列をペーストすると自動的に欄が増えるように。また「↑↓」キーで欄を追加・行き来できるように（エディター側で以前に既にアプデしていました）
+- `Editor.bat`でモデル一覧のリロードをメニューに追加
+
+**API**
+
+- `server_fastapi.py`の実行時に全てのモデルファイルを読み込もうとする挙動を修正。音声合成がリクエストされて初めてそのモデルを読み込むように変更（APIを使わない音声合成のときと同じ挙動）
+- `server_fastapi.py`の音声合成エンドポイント`/voice`について、GETメソッドに加えてPOSTメソッドを追加。GETメソッドでは多くの制約があるようなのでPOSTを使うことが推奨されます。
+
+**CLI**
+
+- `preprocess_text.py`で、書き起こしファイルでの音声ファイル名を自動的に正しい`Data/モデル名/wavs/`へ書き換える`--correct_path`オプションの追加（WebUIでは今までもこの挙動でした）
+- その他上述のデータセット作成の機能追加に伴うCLIのオプションの追加（詳しくは[CLI.md](/docs/CLI.md)を参照）
+
+## v2.3.1 (2024-02-27)
+
+### バグ修正
+- colabの学習用ノートブックが動かなかったのを修正
+- `App.bat`や`server_fastapi.py`では読めない文字でまだエラーが発生するようになっていたので、推論時は必ず読めない文字を無視して強引に読むように挙動を変更
+
+### 改善
+- 読みが取得できない場合に、テキスト前処理完了時にエラーで中断する今までの挙動に加えて、「読み取得失敗ファイルを学習に使わずに進める」もしくは「読めない文字を無視して読んでファイルを学習に使い進める」というオプションを追加。
+- マージ方法に線形補間の他に球面線形補完を追加 （[@frodo821](https://github.com/frodo821) さんによるPRです、ありがとうございます！）
+- デプロイ用`.dockerignore`を更新
+
+### アップデート手順
+- 2.3未満からのアップデートの場合は、[Update-to-Dict-Editor.bat](https://github.com/litagin02/Style-Bert-VITS2/releases/download/2.3/Update-to-Dict-Editor.bat)をダウンロードし、`Style-Bert-VITS2`フォルダがある場所（インストールbatファイルとかがあったところ）においてダブルクリックしてください。
+- 2.3からのアップデートの場合は、単純に今までの`Update-Style-Bert-VITS2.bat`でアップデートできます。
+
+## v2.3 (2024-02-26)
+
+### 大きな変更
+
+大きい変更をいくつかしたため、**アップデートはまた専用の手順**が必要です。下記の指示にしたがってください。
+
+#### ユーザー辞書機能
+あらかじめ辞書に固有名詞を追加することができ、それが**学習時**・**音声合成時**の読み取得部分に適応されます。辞書の追加・編集は次のエディタ経由で行ってください。または、手持ちのOpenJTalkのcsv形式の辞書がある場合は、`dict_data/default.csv`ファイルを直接上書きや追加しても可能です。
+
+使えそうな辞書（ライセンス等は各自ご確認ください）（他に良いのがあったら教えて下さい）：
+
+- [WariHima/Kanayomi-dict](https://github.com/WariHima/KanaYomi-dict)
+- [takana-v/tsumu_dic](https://github.com/takana-v/tsumu_dic)
+
+
+辞書機能部分の[実装](/text/user_dict/) は、中のREADMEにある通り、[VOICEVOX Editor](https://github.com/VOICEVOX/voicevox) のものを使っており、この部分のコードライセンスはLGPL-3.0です。
+
+#### 音声合成専用エディタ
+
+[🤗 オンラインデモはこちらから](https://huggingface.co/spaces/litagin/Style-Bert-VITS2-Editor-Demo)
+
+音声合成専用エディタを追加。今までのWebUIでできた機能のほか、次のような機能が使えます（つまり既存の日本語音声合成ソフトウェアのエディタを真似ました）：
+- セリフ単位でキャラや設定を変更しながら原稿を作り、それを一括で生成したり、原稿を保存等したり読み込んだり
+- GUIよる分かりやすいアクセント調整
+- ユーザー辞書への単語追加や編集
+
+`Editor.bat`をダブルクリックか`python server_editor.py --inbrowser`で起動します。エディター部分は[こちらの別リポジトリ](https://github.com/litagin02/Style-Bert-VITS2-Editor)になります。フロントエンド初心者なのでプルリクや改善案等をお待ちしています。
+
+### バグ修正
+
+- 特定の状況で読みが正しく取得できず `list index out of range` となるバグの修正
+- 前処理時に、書き起こしファイルのある行の形式が不正だと、書き起こしファイルのそれ以降の内容が消えてしまうバグの修正
+- faster-whisperが1.0.0にメジャーバージョンアップされ（今のところ）大幅に劣化したので、バージョンを0.10.1へ固定
+
+### 改善
+
+- テキスト前処理時に、読みの取得の失敗等があった場合に、処理を中断せず、エラーがおきた箇所を`text_error.log`ファイルへ保存するように変更。
+- 音声合成時に、読めない文字があったときはエラーを起こさず、その部分を無視して読み上げるように変更（学習段階ではエラーを出します）
+- コマンドラインで前処理や学習が簡単にできるよう、前処理を行う`preprocess_all.py`を追加（詳しくは[CLI.md](/docs/CLI.md)を参照）
+- 学習の際に、自動的に自分のhugging faceリポジトリへ結果をアップロードするオプションを追加。コマンドライン引数で`--repo_id username/my_model`のように指定してください（詳しくは[CLI.md](/docs/CLI.md)を参照）。🤗の無制限ストレージが使えるのでクラウドでの学習に便利です。
+- 学習時にデコーダー部分を凍結するオプションの追加。品質がもしかしたら上がるかもしれません。
+- `initialize.py`に引数`--dataset_root`と`--assets_root`を追加し、`configs/paths.yml`をその時点で変更できるようにした
+
+### その他
+
+- [paperspaceでの学習の手引きを追加](/docs/paperspace.md)、paperspaceでのimageに使える[Dockerfile](/Dockerfile.train)を追加
+- [CLIでの各種処理の実行の仕方を追加](/docs/CLI.md)
+- [Hugging Face spacesで遊べる音声合成エディタ](https://huggingface.co/spaces/litagin/Style-Bert-VITS2-Editor-Demo)をデプロイするための[Dockerfile](Dockerfile.deploy)を追加
+
+### アップデート手順
+
+- [Update-to-Dict-Editor.bat](https://github.com/litagin02/Style-Bert-VITS2/releases/download/2.3/Update-to-Dict-Editor.bat)をダウンロードし、`Style-Bert-VITS2`フォルダがある場所（インストールbatファイルとかがあったところ）においてダブルクリックしてください。
+
+- 手動での場合は、以下の手順で実行してください：
+```bash
+git pull
+venv\Scripts\activate
+pip uninstall pyopenjtalk-prebuilt
+pip install -U -r requirements.txt
+# python initialize.py  # これを1.x系からのアップデートの場合は実行してください
+python server_editor.py --inbrowser
+```
+
+### 新規インストール手順
+[このzip](https://github.com/litagin02/Style-Bert-VITS2/releases/download/2.3/Style-Bert-VITS2.zip)をダウンロードし、解凍してください。
+を展開し、`Install-Style-Bert-VITS2.bat`をダブルクリックしてください。
+
+
 ## v2.2 (2024-02-09)
 
 ### 変更・機能追加

@@ -10,9 +10,10 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from common.log import logger
-from common.tts_model import Model
-from config import config
+from config import get_path_config
+from style_bert_vits2.logging import logger
+from style_bert_vits2.tts_model import TTSModel
+
 
 warnings.filterwarnings("ignore")
 
@@ -34,6 +35,8 @@ test_texts = [
     "この分野の最新の研究成果を使うと、より自然で表現豊かな音声の生成が可能である。深層学習の応用により、感情やアクセントを含む声質の微妙な変化も再現することが出来る。",
 ]
 
+path_config = get_path_config()
+
 predictor = torch.hub.load(
     "tarepan/SpeechMOS:v1.2.0", "utmos22_strong", trust_repo=True
 )
@@ -47,17 +50,16 @@ args = parser.parse_args()
 model_name: str = args.model_name
 device: str = args.device
 
-model_path = Path(config.assets_root) / model_name
-
+model_path = path_config.assets_root / model_name
 # .safetensorsファイルを検索
 safetensors_files = model_path.glob("*.safetensors")
 
 
 def get_model(model_file: Path):
-    return Model(
-        model_path=str(model_file),
-        config_path=str(model_file.parent / "config.json"),
-        style_vec_path=str(model_file.parent / "style_vectors.npy"),
+    return TTSModel(
+        model_path=model_file,
+        config_path=model_file.parent / "config.json",
+        style_vec_path=model_file.parent / "style_vectors.npy",
         device=device,
     )
 
@@ -99,7 +101,7 @@ for model_file, step, scores in results:
     logger.info(f"{model_file}: {scores[-1]}")
 
 with open(
-    mos_result_dir / f"mos_{model_name}.csv", "w", encoding="utf-8", newline=""
+    mos_result_dir / f"mos_{model_name}.csv", "w", encoding="utf_8_sig", newline=""
 ) as f:
     writer = csv.writer(f)
     writer.writerow(["model_path"] + ["step"] + test_texts + ["mean"])
