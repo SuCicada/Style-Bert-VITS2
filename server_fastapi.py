@@ -142,6 +142,18 @@ if __name__ == "__main__":
     # ↑効いていなさそう。loggerをどうやって上書きするかはよく分からなかった。
 def add_server_api(app: FastAPI | APIRouter,
                    device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+    model_dir = Path(__file__).parent / "model_server"
+    print("model_dir", model_dir)
+    model_holder = TTSModelHolder(model_dir, device)
+    load_models(model_holder)
+    # (print(model_holder.models)
+    # def voice_get(*args, **kwargs):
+    #     return voice(*args, **kwargs)
+
+    # def voice_post(*args, **kwargs):
+    #     return voice(*args, **kwargs)
+
+
     @app.api_route("/voice", methods=["GET", "POST"], response_class=AudioResponse)
     async def voice(
         request: Request,

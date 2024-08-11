@@ -3,6 +3,13 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+import nvidia.cublas.lib
+import nvidia.cudnn.lib
+os.environ['LD_LIBRARY_PATH'] = f"{os.environ['LD_LIBRARY_PATH']}:" +\
+                                f"{os.path.dirname(nvidia.cublas.lib.__file__)}:" +\
+                                f"{os.path.dirname(nvidia.cudnn.lib.__file__)}"
+
+from faster_whisper import WhisperModel
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
