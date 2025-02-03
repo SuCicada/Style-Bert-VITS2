@@ -6,4 +6,4 @@ run:
 docker-run-local:
 	cd deploy/local && \
 		docker-compose down && \
-		docker-compose up -d
+		docker-compose up -d 

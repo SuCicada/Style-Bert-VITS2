@@ -1,3 +1,5 @@
+name: style-bert-vits2
+
 services:
   style-bert-vits2:
 #    user: "1000:1000"
