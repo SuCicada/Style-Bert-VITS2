@@ -17,7 +17,7 @@ services:
       - ./entrypoint.sh:/entrypoint.sh
       - ../../:/app/
       - $HOME/.sumake:/root/.sumake:ro
-    command: sumake run
+    command: sumake run args='--root_path /style-bert-vits2'
     ports:
       - "17862:7860"
     entrypoint: /entrypoint.sh

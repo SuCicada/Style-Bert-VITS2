@@ -30,6 +30,7 @@ parser.add_argument("--host", type=str, default="0.0.0.0")
 parser.add_argument("--port", type=int, default=None)
 parser.add_argument("--no_autolaunch", action="store_true")
 parser.add_argument("--share", action="store_true")
+parser.add_argument("--root_path", type=str, default=None)
 # parser.add_argument("--skip_default_models", action="store_true")
 args = parser.parse_args()
 device = args.device
@@ -62,6 +63,7 @@ with gr.Blocks(theme=GRADIO_THEME) as app:
         server_name=args.host,
         prevent_thread_lock=True,
         server_port=args.port,
+        root_path=args.root_path,
     )
     router = APIRouter()
 
